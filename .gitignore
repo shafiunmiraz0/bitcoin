@@ -31,4 +31,5 @@ target/
 # docker-compose.yml
 # bitcoin.conf
 # bitcoin-*.conf
-# *.log
+*.log
+/bitcoin-data/
