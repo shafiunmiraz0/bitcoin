@@ -24,6 +24,9 @@ RUN apt-get update && apt-get install -y \
     curl \
     ca-certificates \
     ninja-build \
+    autoconf \
+    automake \
+    libtool \
     && rm -rf /var/lib/apt/lists/*
 
 # Build Cap'n Proto
@@ -41,9 +44,11 @@ ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
 # Build Bitcoin Core
 WORKDIR /build
 COPY . .
+
 RUN mkdir -p build && cd build && \
     cmake -DCMAKE_BUILD_TYPE=Release .. && \
-    cmake --build . -j$(nproc)
+    cmake --build . -j$(nproc) && \
+    cmake --install . --prefix=/usr/local
 
 # ==============================
 # Stage 2 — Runtime
@@ -72,14 +77,13 @@ RUN useradd -m -u 1000 bitcoin
 
 WORKDIR /home/bitcoin
 
-# Copy Cap'n Proto libs
+# Copy Cap'n Proto runtime libs
 COPY --from=builder /usr/local/lib/libcapnp* /usr/local/lib/
 COPY --from=builder /usr/local/lib/libkj* /usr/local/lib/
 RUN ldconfig
 
-# Copy Bitcoin binaries
-COPY --from=builder /build/build/src/bitcoind /usr/local/bin/
-COPY --from=builder /build/build/src/bitcoin-cli /usr/local/bin/
+# Bitcoin Core binaries are already installed in /usr/local/bin
+# No need to copy manually
 
 RUN chown -R bitcoin:bitcoin /home/bitcoin
 
@@ -87,7 +91,7 @@ USER bitcoin
 
 ENV BITCOIN_HOME=/home/bitcoin/.bitcoin
 
-# Expose ports for P2P and RPC
+# Expose ports
 EXPOSE 8333 8332
 
 # Default command

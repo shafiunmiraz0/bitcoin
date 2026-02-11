@@ -26,3 +26,9 @@ target/
 /guix-build-*
 
 /ci/scratch/
+
+# Dockerfile
+# docker-compose.yml
+# bitcoin.conf
+# bitcoin-*.conf
+# *.log

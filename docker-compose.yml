@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  bitcoin:
+    container_name: bitcoin-pruned-node
+    build: .
+    restart: unless-stopped
+
+    ports:
+      - "8333:8333"   # P2P port
+      - "8332:8332"   # RPC port
+
+    volumes:
+      - bitcoin-data:/home/bitcoin/.bitcoin
+      - ./bitcoin.conf:/home/bitcoin/.bitcoin/bitcoin.conf:ro
+
+    environment:
+      BITCOIN_HOME: /home/bitcoin/.bitcoin
+
+volumes:
+  bitcoin-data:
