@@ -7,10 +7,6 @@ services:
       - "8333:8333"
       - "8332:8332"
     volumes:
-      - bitcoin-data:/home/bitcoin/.bitcoin  # Docker-managed volume
+      - ./bitcoin-data:/home/bitcoin/.bitcoin  # Bind mount to local directory
     environment:
       BITCOIN_HOME: /home/bitcoin/.bitcoin
-
-volumes:
-  bitcoin-data:
-    driver: local
