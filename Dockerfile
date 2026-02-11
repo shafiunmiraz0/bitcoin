@@ -99,6 +99,8 @@ COPY --from=builder /usr/local/bin/bitcoin-cli /usr/local/bin/
 
 # Copy bitcoin.conf into .bitcoin
 COPY bitcoin.conf /home/bitcoin/.bitcoin/bitcoin.conf
+# Also copy to a backup location for the entrypoint script
+COPY bitcoin.conf /etc/bitcoin.conf
 RUN chown bitcoin:bitcoin /home/bitcoin/.bitcoin/bitcoin.conf
 
 # Ensure ldconfig sees libraries
@@ -112,10 +114,19 @@ RUN cat > /entrypoint.sh << 'EOF'
 #!/bin/bash
 set -e
 
-# Ensure .bitcoin directory has correct permissions
-# This is necessary when using Docker volumes
+# Ensure .bitcoin directory exists and has correct permissions
+mkdir -p /home/bitcoin/.bitcoin
 chmod 700 /home/bitcoin/.bitcoin
+
+# If bitcoin.conf doesn't exist in the mounted volume, copy it from the image
+if [ ! -f /home/bitcoin/.bitcoin/bitcoin.conf ]; then
+    echo "bitcoin.conf not found, copying from image..."
+    cp /etc/bitcoin.conf /home/bitcoin/.bitcoin/bitcoin.conf 2>/dev/null || true
+fi
+
+# Ensure correct ownership and permissions
 chown -R bitcoin:bitcoin /home/bitcoin/.bitcoin
+chmod 600 /home/bitcoin/.bitcoin/bitcoin.conf 2>/dev/null || true
 
 # Switch to bitcoin user and execute the command
 exec su -s /bin/bash bitcoin -c "$*"
