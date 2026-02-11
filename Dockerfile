@@ -1,3 +1,4 @@
+
 # ==============================
 # Stage 1 — Build Bitcoin Core
 # ==============================
@@ -59,40 +60,74 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Runtime dependencies
 RUN apt-get update && apt-get install -y \
-    libssl3 \
-    libevent-2.1-7 \
-    libboost-system1.74.0 \
-    libboost-filesystem1.74.0 \
-    libboost-chrono1.74.0 \
-    libboost-thread1.74.0 \
-    libdb5.3 \
-    libdb5.3++ \
-    libminiupnpc17 \
-    libzmq5 \
+    build-essential \
+    cmake \
+    git \
+    pkg-config \
+    libssl-dev \
+    libevent-dev \
+    libboost-all-dev \
+    libdb-dev \
+    libdb++-dev \
+    libminiupnpc-dev \
+    libzmq3-dev \
+    libsqlite3-dev \
+    python3 \
+    curl \
     ca-certificates \
+    ninja-build \
+    autoconf \
+    automake \
+    libtool \
     && rm -rf /var/lib/apt/lists/*
 
 # Create bitcoin user
 RUN useradd -m -u 1000 bitcoin
+
+# Make sure data folder exists
+RUN mkdir -p /home/bitcoin/.bitcoin && chown bitcoin:bitcoin /home/bitcoin/.bitcoin
 
 WORKDIR /home/bitcoin
 
 # Copy Cap'n Proto runtime libs
 COPY --from=builder /usr/local/lib/libcapnp* /usr/local/lib/
 COPY --from=builder /usr/local/lib/libkj* /usr/local/lib/
+
+# Copy Bitcoin Core binaries from builder
+COPY --from=builder /usr/local/bin/bitcoind /usr/local/bin/
+COPY --from=builder /usr/local/bin/bitcoin-cli /usr/local/bin/
+
+# Copy bitcoin.conf into .bitcoin
+COPY bitcoin.conf /home/bitcoin/.bitcoin/bitcoin.conf
+RUN chown bitcoin:bitcoin /home/bitcoin/.bitcoin/bitcoin.conf
+
+# Ensure ldconfig sees libraries
 RUN ldconfig
 
-# Bitcoin Core binaries are already installed in /usr/local/bin
-# No need to copy manually
-
+# Ensure bitcoin user owns everything in home
 RUN chown -R bitcoin:bitcoin /home/bitcoin
 
-USER bitcoin
+# Create entrypoint script to fix permissions before starting
+RUN cat > /entrypoint.sh << 'EOF'
+#!/bin/bash
+set -e
+
+# Ensure .bitcoin directory has correct permissions
+# This is necessary when using Docker volumes
+chmod 700 /home/bitcoin/.bitcoin
+chown -R bitcoin:bitcoin /home/bitcoin/.bitcoin
+
+# Switch to bitcoin user and execute the command
+exec su -s /bin/bash bitcoin -c "$*"
+EOF
+
+RUN chmod +x /entrypoint.sh
 
 ENV BITCOIN_HOME=/home/bitcoin/.bitcoin
 
-# Expose ports
+# Expose P2P and RPC ports
 EXPOSE 8333 8332
 
-# Default command
+# Use entrypoint to fix permissions before running bitcoind
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["bitcoind", "-conf=/home/bitcoin/.bitcoin/bitcoin.conf", "-printtoconsole"]
