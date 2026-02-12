@@ -1,18 +1,12 @@
-FROM node:18-alpine
-
+FROM golang:1.21-alpine AS builder
 WORKDIR /app
+COPY . .
+RUN go mod download && \
+    CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o dashboard .
 
-# Copy package files
-COPY package*.json ./
-
-# Install dependencies
-RUN npm install --omit=dev
-
-# Copy application
-COPY app.js ./
-
-# Expose port
+FROM alpine:latest
+RUN apk --no-cache add ca-certificates
+WORKDIR /app
+COPY --from=builder /app/dashboard .
 EXPOSE 3000
-
-# Start application
-CMD ["npm", "start"]
+CMD ["./dashboard"]

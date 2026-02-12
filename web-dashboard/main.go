@@ -1,0 +1,513 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"time"
+)
+
+type BitcoinRPC struct {
+	Host     string
+	Port     string
+	User     string
+	Password string
+}
+
+type RPCRequest struct {
+	JSONRPC string        `json:"jsonrpc"`
+	ID      string        `json:"id"`
+	Method  string        `json:"method"`
+	Params  []interface{} `json:"params"`
+}
+
+type RPCResponse struct {
+	Result interface{} `json:"result"`
+	Error  interface{} `json:"error"`
+}
+
+var bitcoinRPC BitcoinRPC
+
+func init() {
+	bitcoinRPC = BitcoinRPC{
+		Host:     getEnv("BITCOIN_HOST", "bitcoin"),
+		Port:     getEnv("BITCOIN_PORT", "8332"),
+		User:     getEnv("BITCOIN_USER", "bitcoinuser"),
+		Password: getEnv("BITCOIN_PASSWORD", "CHANGE_THIS_TO_A_STRONG_PASSWORD"),
+	}
+}
+
+func getEnv(key, defaultVal string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
+	return defaultVal
+}
+
+func callBitcoinRpc(method string, params []interface{}) (interface{}, error) {
+	req := RPCRequest{
+		JSONRPC: "1.0",
+		ID:      "webhook",
+		Method:  method,
+		Params:  params,
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("http://%s:%s/", bitcoinRPC.Host, bitcoinRPC.Port)
+	httpReq, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	if err != nil {
+		return nil, err
+	}
+
+	httpReq.SetBasicAuth(bitcoinRPC.User, bitcoinRPC.Password)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		log.Printf("RPC Error: %s - %v\n", method, err)
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var rpcResp RPCResponse
+	err = json.Unmarshal(respBody, &rpcResp)
+	if err != nil {
+		return nil, err
+	}
+
+	return rpcResp.Result, nil
+}
+
+func getDashboardHTML() string {
+	html := `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bitcoin Node Explorer</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+  <style>
+    :root {
+      --bg-primary: #ffffff;
+      --bg-secondary: #f5f5f5;
+      --text-primary: #1a1a1a;
+      --text-secondary: #666;
+      --text-tertiary: #999;
+      --border: #e0e0e0;
+      --accent: #667eea;
+      --accent2: #764ba2;
+      --success: #4caf50;
+      --warning: #ff9800;
+      --danger: #f44336;
+    }
+    html.dark-mode {
+      --bg-primary: #1e1e1e;
+      --bg-secondary: #2d2d2d;
+      --text-primary: #e0e0e0;
+      --text-secondary: #b0b0b0;
+      --text-tertiary: #808080;
+      --border: #404040;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, var(--accent) 0%, var(--accent2) 100%);
+      min-height: 100vh;
+      padding: 12px;
+      color: var(--text-primary);
+    }
+    html.dark-mode body { background: linear-gradient(135deg, #2a2a2a 0%, #1a1a1a 100%); }
+    .wrapper { max-width: 1400px; margin: 0 auto; }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .title { font-size: 24px; font-weight: 700; color: white; display: flex; align-items: center; gap: 8px; }
+    .controls { display: flex; gap: 8px; }
+    .btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; background: rgba(255,255,255,0.2); color: white; transition: background 0.2s; }
+    .btn:hover { background: rgba(255,255,255,0.3); }
+    .nav-tabs { display: flex; gap: 8px; margin-bottom: 20px; background: var(--bg-primary); padding: 12px; border-radius: 10px; flex-wrap: wrap; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+    .nav-tab { padding: 8px 16px; border: 2px solid transparent; border-radius: 6px; cursor: pointer; background: var(--bg-secondary); color: var(--text-primary); font-weight: 600; transition: all 0.2s; }
+    .nav-tab.active { background: var(--accent); color: white; border-color: var(--accent2); }
+    .nav-tab:hover { background: var(--accent); color: white; }
+    .content { background: var(--bg-primary); padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+    .cards-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
+    .card { background: var(--bg-secondary); padding: 15px; border-radius: 8px; border-left: 4px solid var(--accent); }
+    .card-label { font-size: 12px; color: var(--text-tertiary); text-transform: uppercase; margin-bottom: 6px; }
+    .card-value { font-size: 24px; font-weight: 700; color: var(--accent); }
+    .card-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .chart-container { position: relative; height: 300px; margin-bottom: 20px; background: var(--bg-secondary); padding: 15px; border-radius: 8px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { padding: 10px; text-align: left; border-bottom: 1px solid var(--border); }
+    th { background: var(--bg-secondary); font-weight: 600; color: var(--accent); }
+    tr:hover { background: var(--bg-secondary); }
+    code { font-size: 11px; color: var(--text-secondary); }
+    .search-box { display: flex; gap: 8px; margin-bottom: 15px; }
+    .search-box input { flex: 1; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); }
+    .search-box input::placeholder { color: var(--text-tertiary); }
+    .status-badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; }
+    .status-badge.synced { background: var(--success); color: white; }
+    .status-badge.syncing { background: var(--warning); color: white; }
+    @media (max-width: 768px) {
+      .header { flex-direction: column; align-items: flex-start; }
+      .cards-grid { grid-template-columns: 1fr; }
+      .chart-container { height: 200px; }
+      .nav-tabs { flex-direction: column; }
+      .nav-tab { width: 100%; }
+      table { font-size: 12px; }
+      th, td { padding: 6px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="header">
+      <div class="title">₿ Bitcoin Node Explorer</div>
+      <div class="controls">
+        <button class="btn" onclick="toggleTheme()">🌓 Theme</button>
+      </div>
+    </div>
+    <div class="nav-tabs">
+      <div class="nav-tab active" onclick="switchTab('overview', this)">Overview</div>
+      <div class="nav-tab" onclick="switchTab('blocks', this)">Blocks</div>
+      <div class="nav-tab" onclick="switchTab('mempool', this)">Mempool</div>
+      <div class="nav-tab" onclick="switchTab('network', this)">Network</div>
+      <div class="nav-tab" onclick="switchTab('chainstate', this)">ChainState</div>
+    </div>
+    <div class="content">
+      <div id="overview" class="tab-content active">
+        <div class="cards-grid" id="statusCards"></div>
+        <h3>📊 Real-time Metrics</h3>
+        <div class="chart-container"><canvas id="blockChart"></canvas></div>
+        <div class="chart-container"><canvas id="peersChart"></canvas></div>
+        <div class="chart-container"><canvas id="memoryChart"></canvas></div>
+        <div class="chart-container"><canvas id="syncChart"></canvas></div>
+      </div>
+      <div id="blocks" class="tab-content">
+        <h3>📦 Recent Blocks</h3>
+        <div class="search-box">
+          <input type="number" id="blockSearch" placeholder="Search by height..." />
+          <button class="btn" onclick="searchBlock()">Search</button>
+        </div>
+        <table id="blocksTable">
+          <thead><tr><th>Height</th><th>Hash</th><th>Time</th><th>Transactions</th><th>Size</th></tr></thead>
+          <tbody id="blocksList"></tbody>
+        </table>
+      </div>
+      <div id="mempool" class="tab-content">
+        <h3>💾 Mempool Transactions</h3>
+        <table id="mempoolTable">
+          <thead><tr><th>TXID</th><th>Size</th><th>Fee</th></tr></thead>
+          <tbody id="mempoolList"></tbody>
+        </table>
+      </div>
+      <div id="network" class="tab-content">
+        <h3>🌐 Network Statistics</h3>
+        <div class="cards-grid" id="networkCards"></div>
+      </div>
+      <div id="chainstate" class="tab-content">
+        <h3>⛓️ ChainState Database</h3>
+        <div class="cards-grid" id="chainstateCards"></div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const chartData = { times: [], blocks: [], peers: [], memory: [], sync: [] };
+    let blockChart, peersChart, memoryChart, syncChart;
+    function fmt(num) { return new Intl.NumberFormat().format(Math.floor(num)); }
+    function bytes(b) { const units = ['B','KB','MB','GB']; let size = b, idx = 0; while (size >= 1024 && idx < units.length-1) { size /= 1024; idx++; } return (size < 10 ? size.toFixed(2) : Math.floor(size)) + ' ' + units[idx]; }
+    function initTheme() { if (localStorage.getItem('theme') === 'dark') document.documentElement.classList.add('dark-mode'); }
+    function toggleTheme() { document.documentElement.classList.toggle('dark-mode'); const isDark = document.documentElement.classList.contains('dark-mode'); localStorage.setItem('theme', isDark ? 'dark' : 'light'); if (blockChart) updateChartColors(); }
+    function getChartColors() { const isDark = document.documentElement.classList.contains('dark-mode'); return { gridColor: isDark ? '#404040' : '#e0e0e0', textColor: isDark ? '#b0b0b0' : '#666', lineColor: isDark ? '#667eea' : '#667eea' }; }
+    function updateChartColors() { const colors = getChartColors(); [blockChart, peersChart, memoryChart, syncChart].forEach(chart => { if (chart) { chart.options.scales.y.grid.color = colors.gridColor; chart.options.scales.y.ticks.color = colors.textColor; chart.options.scales.x.grid.color = colors.gridColor; chart.options.scales.x.ticks.color = colors.textColor; chart.update(); } }); }
+    async function loadOverview() {
+      try {
+        const status = await fetch('/api/status').then(r => r.json());
+        const now = new Date().toLocaleTimeString();
+        chartData.times.push(now);
+        chartData.blocks.push(status.blockchain?.blocks || 0);
+        chartData.peers.push(status.peers || 0);
+        chartData.memory.push(status.memory || 0);
+        chartData.sync.push((status.blockchain?.verificationprogress || 0) * 100);
+        if (chartData.times.length > 60) { chartData.times.shift(); chartData.blocks.shift(); chartData.peers.shift(); chartData.memory.shift(); chartData.sync.shift(); }
+        const syncPercent = ((status.blockchain?.verificationprogress || 0) * 100).toFixed(2);
+        const synced = syncPercent >= 99.9;
+        document.getElementById('statusCards').innerHTML = '<div class="card"><div class="card-label">Block Height</div><div class="card-value">' + fmt(status.blockchain?.blocks || 0) + '</div></div><div class="card"><div class="card-label">Connections</div><div class="card-value">' + (status.peers || 0) + '</div></div><div class="card"><div class="card-label">Sync Progress</div><div class="card-value">' + syncPercent + '%</div><div class="card-sub"><span class="status-badge ' + (synced ? 'synced' : 'syncing') + '">' + (synced ? '✓ Synced' : '⟳ Syncing') + '</span></div></div><div class="card"><div class="card-label">Memory Usage</div><div class="card-value">' + (status.memory?.toFixed(1) || 0) + ' MB</div></div><div class="card"><div class="card-label">Mempool Size</div><div class="card-value">' + fmt(status.mempool || 0) + '</div></div><div class="card"><div class="card-label">Uptime</div><div class="card-value" style="font-size:14px">' + (status.uptime || 'N/A') + '</div></div>';
+        const colors = getChartColors();
+        const chartOptions = { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { grid: { color: colors.gridColor }, ticks: { color: colors.textColor } }, x: { grid: { color: colors.gridColor }, ticks: { color: colors.textColor } } } };
+        if (!blockChart) {
+          blockChart = new Chart(document.getElementById('blockChart'), { type: 'line', data: { labels: chartData.times, datasets: [{ label: 'Block Height', data: chartData.blocks, borderColor: colors.lineColor, tension: 0.1, fill: false }] }, options: chartOptions });
+          peersChart = new Chart(document.getElementById('peersChart'), { type: 'line', data: { labels: chartData.times, datasets: [{ label: 'Peers', data: chartData.peers, borderColor: '#ff9800', tension: 0.1, fill: false }] }, options: chartOptions });
+          memoryChart = new Chart(document.getElementById('memoryChart'), { type: 'line', data: { labels: chartData.times, datasets: [{ label: 'Memory (MB)', data: chartData.memory, borderColor: '#f44336', tension: 0.1, fill: false }] }, options: chartOptions });
+          syncChart = new Chart(document.getElementById('syncChart'), { type: 'line', data: { labels: chartData.times, datasets: [{ label: 'Sync Progress (%)', data: chartData.sync, borderColor: '#4caf50', tension: 0.1, fill: false }] }, options: chartOptions });
+        } else {
+          blockChart.data.labels = chartData.times; blockChart.data.datasets[0].data = chartData.blocks; blockChart.update();
+          peersChart.data.labels = chartData.times; peersChart.data.datasets[0].data = chartData.peers; peersChart.update();
+          memoryChart.data.labels = chartData.times; memoryChart.data.datasets[0].data = chartData.memory; memoryChart.update();
+          syncChart.data.labels = chartData.times; syncChart.data.datasets[0].data = chartData.sync; syncChart.update();
+        }
+      } catch (e) { console.error('Error loading overview:', e); }
+    }
+    async function loadBlocks() {
+      try {
+        const data = await fetch('/api/recent-blocks').then(r => r.json());
+        let html = '';
+        (data.blocks || []).forEach(b => { html += '<tr><td>' + fmt(b.height) + '</td><td><code>' + b.hash.substring(0, 16) + '...</code></td><td>' + new Date(b.time * 1000).toLocaleString() + '</td><td>' + b.tx + '</td><td>' + bytes(b.size) + '</td></tr>'; });
+        document.getElementById('blocksList').innerHTML = html;
+      } catch (e) { console.error('Error loading blocks:', e); }
+    }
+    async function loadMempool() {
+      try {
+        const data = await fetch('/api/mempool').then(r => r.json());
+        let html = '';
+        (data.transactions || []).forEach(t => { html += '<tr><td><code>' + t.txid.substring(0, 16) + '...</code></td><td>' + bytes(t.size) + '</td><td>' + t.fee + '</td></tr>'; });
+        document.getElementById('mempoolList').innerHTML = html;
+      } catch (e) { console.error('Error loading mempool:', e); }
+    }
+    async function loadNetwork() {
+      try {
+        const data = await fetch('/api/network').then(r => r.json());
+        document.getElementById('networkCards').innerHTML = '<div class="card"><div class="card-label">Total Connections</div><div class="card-value">' + (data.connections || 0) + '</div></div><div class="card"><div class="card-label">Inbound</div><div class="card-value">' + (data.inbound || 0) + '</div></div><div class="card"><div class="card-label">Outbound</div><div class="card-value">' + (data.outbound || 0) + '</div></div><div class="card"><div class="card-label">Relay Fee</div><div class="card-value" style="font-size:14px">' + (data.relayfee || 'N/A') + '</div></div>';
+      } catch (e) { console.error('Error loading network:', e); }
+    }
+    async function loadChainState() {
+      try {
+        const data = await fetch('/api/chainstate').then(r => r.json());
+        document.getElementById('chainstateCards').innerHTML = '<div class="card"><div class="card-label">Database Size</div><div class="card-value">' + bytes(data.size || 0) + '</div></div><div class="card"><div class="card-label">UTXO Count</div><div class="card-value">' + fmt(data.utxos || 0) + '</div></div><div class="card"><div class="card-label">Transactions</div><div class="card-value">' + fmt(data.transactions || 0) + '</div></div>';
+      } catch (e) { console.error('Error loading chainstate:', e); }
+    }
+    function switchTab(tabName, element) { document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active')); document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active')); document.getElementById(tabName).classList.add('active'); element.classList.add('active'); loadTabContent(tabName); }
+    function loadTabContent(tab) { if (tab === 'blocks') loadBlocks(); else if (tab === 'mempool') loadMempool(); else if (tab === 'network') loadNetwork(); else if (tab === 'chainstate') loadChainState(); }
+    function searchBlock() { alert('Block search coming soon!'); }
+    initTheme();
+    loadOverview();
+    setInterval(() => { if (document.querySelector('.tab-content.active').id === 'overview') loadOverview(); }, 15000);
+  </script>
+</body>
+</html>`
+	return html
+}
+
+func main() {
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, getDashboardHTML())
+	})
+
+	http.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		blockchainInfo, _ := callBitcoinRpc("getblockchaininfo", []interface{}{})
+		netInfo, _ := callBitcoinRpc("getnetworkinfo", []interface{}{})
+		memInfo, _ := callBitcoinRpc("getmemoryinfo", []interface{}{})
+
+		var mempoolSize int64 = 0
+		var uptime string = "N/A"
+		var chainstatesize int64 = 0
+
+		if mempoolResult, err := callBitcoinRpc("getmempoolinfo", []interface{}{}); err == nil {
+			if m, ok := mempoolResult.(map[string]interface{}); ok {
+				if size, ok := m["size"].(float64); ok {
+					mempoolSize = int64(size)
+				}
+			}
+		}
+
+		if uptimeResult, err := callBitcoinRpc("uptime", []interface{}{}); err == nil {
+			if uptimeSeconds, ok := uptimeResult.(float64); ok {
+				days := int64(uptimeSeconds) / 86400
+				hours := (int64(uptimeSeconds) % 86400) / 3600
+				if days > 0 {
+					uptime = fmt.Sprintf("%dd %dh", days, hours)
+				} else {
+					uptime = fmt.Sprintf("%dh", hours)
+				}
+			}
+		}
+
+		if chainstatsResult, err := callBitcoinRpc("getchainsstats", []interface{}{1}); err == nil {
+			if m, ok := chainstatsResult.(map[string]interface{}); ok {
+				if size, ok := m["bytes_serialized"].(float64); ok {
+					chainstatesize = int64(size)
+				}
+			}
+		}
+
+		response := map[string]interface{}{
+			"blockchain": blockchainInfo,
+			"peers":      extractInt(netInfo, "connections"),
+			"memory":     extractFloat(memInfo, "used") / (1024 * 1024),
+			"networkInfo": map[string]interface{}{
+				"version":  extractString(netInfo, "version"),
+				"inbound":  extractInt(netInfo, "connections_in"),
+				"outbound": extractInt(netInfo, "connections_out"),
+			},
+			"mempool":        mempoolSize,
+			"uptime":         uptime,
+			"chainstatesize": chainstatesize,
+		}
+
+		json.NewEncoder(w).Encode(response)
+	})
+
+	http.HandleFunc("/api/recent-blocks", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		blockchainInfo, _ := callBitcoinRpc("getblockchaininfo", []interface{}{})
+		blocks := []map[string]interface{}{}
+
+		if m, ok := blockchainInfo.(map[string]interface{}); ok {
+			if blocksVal, ok := m["blocks"].(float64); ok {
+				for i := 0; i < 10; i++ {
+					height := int64(blocksVal) - int64(i)
+					if height < 0 {
+						break
+					}
+
+					if hash, err := callBitcoinRpc("getblockhash", []interface{}{height}); err == nil {
+						if hashStr, ok := hash.(string); ok {
+							if block, err := callBitcoinRpc("getblock", []interface{}{hashStr}); err == nil {
+								if bm, ok := block.(map[string]interface{}); ok {
+									txs := []interface{}{}
+									if tx, ok := bm["tx"].([]interface{}); ok {
+										txs = tx
+									}
+									blocks = append(blocks, map[string]interface{}{
+										"height": height,
+										"hash":   extractString(bm, "hash"),
+										"time":   extractInt(bm, "time"),
+										"tx":     len(txs),
+										"size":   extractInt(bm, "size"),
+									})
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{"blocks": blocks})
+	})
+
+	http.HandleFunc("/api/mempool", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		mempool, _ := callBitcoinRpc("getrawmempool", []interface{}{true})
+		transactions := []map[string]interface{}{}
+
+		if m, ok := mempool.(map[string]interface{}); ok {
+			count := 0
+			for txid, info := range m {
+				if count >= 20 {
+					break
+				}
+				if infoMap, ok := info.(map[string]interface{}); ok {
+					var size int64 = 0
+					var fee float64 = 0
+
+					if s, ok := infoMap["size"].(float64); ok {
+						size = int64(s)
+					}
+					if f, ok := infoMap["fee"].(float64); ok {
+						fee = f
+					}
+
+					transactions = append(transactions, map[string]interface{}{
+						"txid": txid,
+						"size": size,
+						"fee":  fmt.Sprintf("%.0f sat", fee*100000000),
+					})
+					count++
+				}
+			}
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{"transactions": transactions})
+	})
+
+	http.HandleFunc("/api/network", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		netInfo, _ := callBitcoinRpc("getnetworkinfo", []interface{}{})
+
+		response := map[string]interface{}{
+			"connections":   extractInt(netInfo, "connections"),
+			"inbound":       extractInt(netInfo, "connections_in"),
+			"outbound":      extractInt(netInfo, "connections_out"),
+			"version":       extractString(netInfo, "version"),
+			"relayfee":      extractFloat(netInfo, "relayfee"),
+			"minrelaytxfee": extractFloat(netInfo, "minrelaytxfee"),
+			"warnings":      extractString(netInfo, "warnings"),
+		}
+
+		json.NewEncoder(w).Encode(response)
+	})
+
+	http.HandleFunc("/api/chainstate", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		chainsstats, _ := callBitcoinRpc("getchainsstats", []interface{}{1})
+
+		response := map[string]interface{}{
+			"size":            extractInt(chainsstats, "bytes_serialized"),
+			"utxos":           extractInt(chainsstats, "utxo_count"),
+			"transactions":    extractInt(chainsstats, "transaction_count"),
+			"tx_serialized":   extractInt(chainsstats, "txid_index_bytes_serialized"),
+			"utxo_serialized": extractInt(chainsstats, "utxo_index_bytes_serialized"),
+		}
+
+		json.NewEncoder(w).Encode(response)
+	})
+
+	port := getEnv("PORT", "3000")
+	log.Printf("Bitcoin Node Explorer running on port %s\n", port)
+	log.Fatal(http.ListenAndServe("0.0.0.0:"+port, nil))
+}
+
+func extractInt(data interface{}, key string) int64 {
+	if m, ok := data.(map[string]interface{}); ok {
+		if val, ok := m[key].(float64); ok {
+			return int64(val)
+		}
+	}
+	return 0
+}
+
+func extractFloat(data interface{}, key string) float64 {
+	if m, ok := data.(map[string]interface{}); ok {
+		if val, ok := m[key].(float64); ok {
+			return val
+		}
+	}
+	return 0
+}
+
+func extractString(data interface{}, key string) string {
+	if m, ok := data.(map[string]interface{}); ok {
+		if val, ok := m[key].(string); ok {
+			return val
+		}
+	}
+	return ""
+}
