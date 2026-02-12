@@ -1,0 +1,14 @@
+{
+  "name": "bitcoin-node-dashboard",
+  "version": "1.0.0",
+  "description": "Bitcoin Node Status Dashboard",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "node app.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.6.0"
+  }
+}

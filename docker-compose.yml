@@ -10,3 +10,28 @@ services:
       - ./bitcoin-data:/home/bitcoin/.bitcoin  # Bind mount to local directory
     environment:
       BITCOIN_HOME: /home/bitcoin/.bitcoin
+    networks:
+      - bitcoin-network
+
+  web-dashboard:
+    container_name: bitcoin-dashboard
+    build:
+      context: ./web-dashboard
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      BITCOIN_HOST: bitcoin
+      BITCOIN_PORT: 8332
+      BITCOIN_USER: bitcoinuser
+      BITCOIN_PASSWORD: CHANGE_THIS_TO_A_STRONG_PASSWORD
+      PORT: 3000
+    depends_on:
+      - bitcoin
+    networks:
+      - bitcoin-network
+
+networks:
+  bitcoin-network:
+    driver: bridge
