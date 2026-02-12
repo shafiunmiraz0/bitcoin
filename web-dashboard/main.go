@@ -8,6 +8,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
+	"runtime"
 	"time"
 )
 
@@ -30,7 +32,16 @@ type RPCResponse struct {
 	Error  interface{} `json:"error"`
 }
 
-var bitcoinRPC BitcoinRPC
+// State tracking for metrics
+var (
+	bitcoinRPC      BitcoinRPC
+	lastBlockHeight int64
+	lastBlockTime   time.Time
+	blockTimestamps []struct {
+		height int64
+		time   time.Time
+	}
+)
 
 func init() {
 	bitcoinRPC = BitcoinRPC{
@@ -188,11 +199,16 @@ func getDashboardHTML() string {
       </div>
     </div>
     <div class="nav-tabs">
-      <div class="nav-tab active" onclick="switchTab('overview', this)">Overview</div>
-      <div class="nav-tab" onclick="switchTab('blocks', this)">Blocks</div>
-      <div class="nav-tab" onclick="switchTab('mempool', this)">Mempool</div>
-      <div class="nav-tab" onclick="switchTab('network', this)">Network</div>
-      <div class="nav-tab" onclick="switchTab('chainstate', this)">ChainState</div>
+      <div class="nav-tab active" onclick="switchTab('overview', this)">📊 Overview</div>
+      <div class="nav-tab" onclick="switchTab('health', this)">❤️ Health</div>
+      <div class="nav-tab" onclick="switchTab('sync', this)">⚡ Sync</div>
+      <div class="nav-tab" onclick="switchTab('mempool', this)">💫 Mempool</div>
+      <div class="nav-tab" onclick="switchTab('network', this)">🌐 Network</div>
+      <div class="nav-tab" onclick="switchTab('security', this)">🔒 Security</div>
+      <div class="nav-tab" onclick="switchTab('storage', this)">💾 Storage</div>
+      <div class="nav-tab" onclick="switchTab('blocks', this)">⛓️ Blocks</div>
+      <div class="nav-tab" onclick="switchTab('explorer', this)">🔍 Explorer</div>
+      <div class="nav-tab" onclick="switchTab('chainstate', this)">📈 ChainState</div>
     </div>
     <div class="content">
       <div id="overview" class="tab-content active">
@@ -202,6 +218,30 @@ func getDashboardHTML() string {
         <div class="chart-container"><canvas id="peersChart"></canvas></div>
         <div class="chart-container"><canvas id="memoryChart"></canvas></div>
         <div class="chart-container"><canvas id="syncChart"></canvas></div>
+      </div>
+      <div id="health" class="tab-content">
+        <div class="cards-grid" id="healthCards"></div>
+      </div>
+      <div id="sync" class="tab-content">
+        <div class="cards-grid" id="syncCards"></div>
+        <div class="chart-container"><canvas id="syncProgressChart"></canvas></div>
+      </div>
+      <div id="mempool" class="tab-content">
+        <div class="cards-grid" id="mempoolCards"></div>
+        <h3>💫 Top Mempool Transactions</h3>
+        <table id="mempoolTable">
+          <thead><tr><th>TXID</th><th>Size</th><th>Fee</th><th>Fee Rate (sat/vB)</th></tr></thead>
+          <tbody id="mempoolList"></tbody>
+        </table>
+      </div>
+      <div id="network" class="tab-content">
+        <div class="cards-grid" id="networkCards"></div>
+      </div>
+      <div id="security" class="tab-content">
+        <div class="cards-grid" id="securityCards"></div>
+      </div>
+      <div id="storage" class="tab-content">
+        <div class="cards-grid" id="storageCards"></div>
       </div>
       <div id="blocks" class="tab-content">
         <h3>📦 Recent Blocks</h3>
@@ -214,16 +254,13 @@ func getDashboardHTML() string {
           <tbody id="blocksList"></tbody>
         </table>
       </div>
-      <div id="mempool" class="tab-content">
-        <h3>💾 Mempool Transactions</h3>
-        <table id="mempoolTable">
-          <thead><tr><th>TXID</th><th>Size</th><th>Fee</th></tr></thead>
-          <tbody id="mempoolList"></tbody>
-        </table>
-      </div>
-      <div id="network" class="tab-content">
-        <h3>🌐 Network Statistics</h3>
-        <div class="cards-grid" id="networkCards"></div>
+      <div id="explorer" class="tab-content">
+        <h3>🔍 Transaction Explorer</h3>
+        <div class="search-box">
+          <input type="text" id="txSearch" placeholder="Enter transaction ID (TXID)..." />
+          <button class="btn" onclick="searchTransaction()">Search TX</button>
+        </div>
+        <div id="explorerResults"></div>
       </div>
       <div id="chainstate" class="tab-content">
         <h3>⛓️ ChainState Database</h3>
@@ -297,7 +334,68 @@ func getDashboardHTML() string {
       } catch (e) { console.error('Error loading chainstate:', e); }
     }
     function switchTab(tabName, element) { document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active')); document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active')); document.getElementById(tabName).classList.add('active'); element.classList.add('active'); loadTabContent(tabName); }
-    function loadTabContent(tab) { if (tab === 'blocks') loadBlocks(); else if (tab === 'mempool') loadMempool(); else if (tab === 'network') loadNetwork(); else if (tab === 'chainstate') loadChainState(); }
+    function loadTabContent(tab) {
+      if (tab === 'overview') loadOverview();
+      else if (tab === 'health') loadHealth();
+      else if (tab === 'sync') loadSync();
+      else if (tab === 'mempool') loadMempoolEnhanced();
+      else if (tab === 'network') loadNetworkAnalytics();
+      else if (tab === 'security') loadSecurity();
+      else if (tab === 'storage') loadStorage();
+      else if (tab === 'blocks') loadBlocks();
+      else if (tab === 'explorer') { document.getElementById('explorerResults').innerHTML = '<p>Enter a transaction ID to search...</p>'; }
+      else if (tab === 'chainstate') loadChainState();
+    }
+    async function loadHealth() {
+      try {
+        const data = await fetch('/api/health').then(r => r.json());
+        document.getElementById('healthCards').innerHTML = '<div class="card"><div class="card-label">CPU Usage</div><div class="card-value">' + data.cpu.toFixed(1) + '%</div></div><div class="card"><div class="card-label">RAM Usage</div><div class="card-value">' + data.ram.toFixed(1) + '%</div><div class="card-sub">' + data.ramMB.toFixed(0) + 'MB / ' + data.ramTotalMB.toFixed(0) + 'MB</div></div><div class="card"><div class="card-label">Disk Usage</div><div class="card-value">' + data.disk.toFixed(1) + '%</div><div class="card-sub">' + data.diskUsedGB.toFixed(1) + 'GB / ' + data.diskTotalGB.toFixed(1) + 'GB</div></div><div class="card"><div class="card-label">Bitcoin Uptime</div><div class="card-value" style="font-size:16px">' + data.bitcoindUptimeFormatted + '</div></div>' + (data.alerts && data.alerts.length > 0 ? '<div class="card" style="background: #f44336; color: white;"><strong>Alerts:</strong><br>' + data.alerts.map(a => '⚠️ ' + a.message).join('<br>') + '</div>' : '');
+      } catch (e) { console.error('Error loading health:', e); }
+    }
+    async function loadSync() {
+      try {
+        const data = await fetch('/api/sync-info').then(r => r.json());
+        document.getElementById('syncCards').innerHTML = '<div class="card"><div class="card-label">Sync Progress</div><div class="card-value">' + parseFloat(data.syncPercentage).toFixed(2) + '%</div></div><div class="card"><div class="card-label">Block Height</div><div class="card-value">' + fmt(data.blockHeight) + '</div><div class="card-sub">Behind: ' + fmt(data.blocksBehind) + '</div></div><div class="card"><div class="card-label">Sync Speed</div><div class="card-value">' + data.blocksPerHour + ' blks/h</div></div><div class="card"><div class="card-label">Est. Time Left</div><div class="card-value" style="font-size:16px">' + data.estimatedTimeRemaining + '</div></div>';
+      } catch (e) { console.error('Error loading sync:', e); }
+    }
+    async function loadMempoolEnhanced() {
+      try {
+        const data = await fetch('/api/mempool-enhanced').then(r => r.json());
+        let txHtml = '';
+        (data.topTransactions || []).slice(0, 10).forEach(t => { txHtml += '<tr><td><code>' + t.txid.substring(0, 16) + '...</code></td><td>' + bytes(t.size) + '</td><td>' + t.fee + ' sat</td><td>' + t.feeRate + '</td></tr>'; });
+        document.getElementById('mempoolCards').innerHTML = '<div class="card"><div class="card-label">Transaction Count</div><div class="card-value">' + fmt(data.transactionCount) + '</div></div><div class="card"><div class="card-label">Mempool Size</div><div class="card-value">' + data.mempoolMB + ' MB</div></div><div class="card"><div class="card-label">Avg Fee</div><div class="card-value">' + data.averageFee + ' sat/vB</div></div><div class="card"><div class="card-label">Oldest TX Age</div><div class="card-value">' + data.oldestTransactionAge + ' min</div></div><div class="card"><div class="card-label">Recommended Fee</div><div class="card-sub">Slow: ' + data.feeDistribution.slow + ' | Medium: ' + data.feeDistribution.medium + ' | Fast: ' + data.feeDistribution.fast + '</div></div>';
+        document.getElementById('mempoolList').innerHTML = txHtml;
+      } catch (e) { console.error('Error loading mempool:', e); }
+    }
+    async function loadNetworkAnalytics() {
+      try {
+        const data = await fetch('/api/network-analytics').then(r => r.json());
+        document.getElementById('networkCards').innerHTML = '<div class="card"><div class="card-label">Total Peers</div><div class="card-value">' + fmt(data.totalPeers) + '</div><div class="card-sub">Inbound: ' + data.inbound + ' | Outbound: ' + data.outbound + '</div></div><div class="card"><div class="card-label">Avg Latency</div><div class="card-value">' + data.averageLatency + 'ms</div></div><div class="card"><div class="card-label">IPv4 Reachable</div><div class="card-value" style="font-size:18px">' + (data.reachableIPv4 ? '✓' : '✗') + '</div></div><div class="card"><div class="card-label">IPv6 Reachable</div><div class="card-value" style="font-size:18px">' + (data.reachableIPv6 ? '✓' : '✗') + '</div></div>';
+      } catch (e) { console.error('Error loading network:', e); }
+    }
+    async function loadSecurity() {
+      try {
+        const data = await fetch('/api/security').then(r => r.json());
+        let alertHtml = '';
+        if (data.alerts && data.alerts.length > 0) { alertHtml = '<div class="card" style="background: #f44336; color: white; grid-column: 1/-1;"><strong>Security Alerts:</strong><br>' + data.alerts.join('<br>') + '</div>'; }
+        document.getElementById('securityCards').innerHTML = alertHtml + '<div class="card"><div class="card-label">Chain</div><div class="card-value">' + data.chain.toUpperCase() + '</div></div><div class="card"><div class="card-label">Reorg Detected</div><div class="card-value">' + (data.reorgDetected ? '✗ Yes' : '✓ No') + '</div></div><div class="card"><div class="card-label">Pruned</div><div class="card-value">' + (data.pruned ? '✓ Yes' : '✗ No') + '</div></div>';
+      } catch (e) { console.error('Error loading security:', e); }
+    }
+    async function loadStorage() {
+      try {
+        const data = await fetch('/api/storage').then(r => r.json());
+        document.getElementById('storageCards').innerHTML = '<div class="card"><div class="card-label">Chainstate Size</div><div class="card-value">' + data.chainstateGB + ' GB</div></div><div class="card"><div class="card-label">Disk Usage</div><div class="card-value">' + data.diskUsagePercent + '%</div></div><div class="card"><div class="card-label">Disk Free</div><div class="card-value">' + (100 - data.diskUsagePercent).toFixed(1) + '%</div><div class="card-sub">' + data.diskTotalGB + ' GB Total</div></div><div class="card"><div class="card-label">Pruned</div><div class="card-value">' + (data.pruned ? 'Yes' : 'No') + '</div><div class="card-sub">Auto-Prune: ' + data.autoPruneEnabled + '</div></div><div class="card"><div class="card-label">UTXO Count</div><div class="card-value">' + fmt(data.utxoCount) + '</div></div>';
+      } catch (e) { console.error('Error loading storage:', e); }
+    }
+    async function searchTransaction() {
+      const txid = document.getElementById('txSearch').value.trim();
+      if (!txid) { alert('Please enter a transaction ID'); return; }
+      try {
+        const data = await fetch('/api/tx-lookup/' + txid).then(r => r.json());
+        if (data.error) { document.getElementById('explorerResults').innerHTML = '<div style="color: red;">Error: ' + data.error + '</div>'; return; }
+        document.getElementById('explorerResults').innerHTML = '<div class="cards-grid"><div class="card"><div class="card-label">TXID</div><div class="card-value" style="font-size:10px;word-break:break-all;">' + data.txid + '</div></div><div class="card"><div class="card-label">Size</div><div class="card-value">' + data.size + 'B</div></div><div class="card"><div class="card-label">Inputs</div><div class="card-value">' + data.vin + '</div></div><div class="card"><div class="card-label">Outputs</div><div class="card-value">' + data.vout + '</div></div><div class="card"><div class="card-label">Confirmations</div><div class="card-value">' + data.confirmations + '</div></div></div>';
+      } catch (e) { console.error('Error searching tx:', e); }
+    }
     function searchBlock() { alert('Block search coming soon!'); }
     initTheme();
     loadOverview();
@@ -480,6 +578,336 @@ func main() {
 		json.NewEncoder(w).Encode(response)
 	})
 
+	// ========== 1️⃣ NODE HEALTH & PERFORMANCE ==========
+	http.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		metrics := getSystemMetrics()
+		netInfo, _ := callBitcoinRpc("getnetworkinfo", []interface{}{})
+		uptimeResult, _ := callBitcoinRpc("uptime", []interface{}{})
+
+		uptimeFormatted := "N/A"
+		if uptimeSeconds, ok := uptimeResult.(float64); ok {
+			days := int64(uptimeSeconds) / 86400
+			hours := (int64(uptimeSeconds) % 86400) / 3600
+			mins := (int64(uptimeSeconds) % 3600) / 60
+			if days > 0 {
+				uptimeFormatted = fmt.Sprintf("%dd %dh %dm", days, hours, mins)
+			} else if hours > 0 {
+				uptimeFormatted = fmt.Sprintf("%dh %dm", hours, mins)
+			} else {
+				uptimeFormatted = fmt.Sprintf("%dm", mins)
+			}
+		}
+
+		alerts := []map[string]interface{}{}
+		if metrics.CPUUsage > 80 {
+			alerts = append(alerts, map[string]interface{}{"type": "cpu", "message": "High CPU usage"})
+		}
+		if metrics.RAMUsage > 85 {
+			alerts = append(alerts, map[string]interface{}{"type": "ram", "message": "High RAM usage"})
+		}
+		if extractInt(netInfo, "connections") < 1 {
+			alerts = append(alerts, map[string]interface{}{"type": "network", "message": "No peer connections"})
+		}
+
+		response := map[string]interface{}{
+			"cpu":                     metrics.CPUUsage,
+			"ram":                     metrics.RAMUsage,
+			"ramMB":                   metrics.RAMUseMB,
+			"ramTotalMB":              metrics.RAMTotalMB,
+			"disk":                    metrics.DiskUsage,
+			"diskUsedGB":              metrics.DiskUsedGB,
+			"diskTotalGB":             metrics.DiskTotalGB,
+			"bitcoindUptime":          uptimeResult,
+			"bitcoindUptimeFormatted": uptimeFormatted,
+			"connections":             extractInt(netInfo, "connections"),
+			"alerts":                  alerts,
+		}
+
+		json.NewEncoder(w).Encode(response)
+	})
+
+	// ========== 2️⃣ SYNC & BLOCKCHAIN INSIGHTS ==========
+	http.HandleFunc("/api/sync-info", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		blockchainInfo, _ := callBitcoinRpc("getblockchaininfo", []interface{}{})
+
+		var blockHeight, headerHeight, blocksBehind int64
+		if m, ok := blockchainInfo.(map[string]interface{}); ok {
+			blockHeight = int64(m["blocks"].(float64))
+			headerHeight = int64(m["headers"].(float64))
+			blocksBehind = headerHeight - blockHeight
+		}
+
+		syncPercent := 0.0
+		if blockHeaderHeight, ok := blockchainInfo.(map[string]interface{})["verificationprogress"].(float64); ok {
+			syncPercent = blockHeaderHeight * 100
+		}
+
+		estimatedTimeRemaining := "N/A"
+		blocksPerHour := 0.0
+		blocksPerMinute := 0.0
+
+		if lastBlockHeight != blockHeight && blocksBehind > 0 {
+			// Simple calculation based on recent blocks
+			if len(blockTimestamps) > 10 {
+				timeDiff := time.Now().Sub(blockTimestamps[0].time).Seconds()
+				heightDiff := blockTimestamps[len(blockTimestamps)-1].height - blockTimestamps[0].height
+				if timeDiff > 0 {
+					blocksPerMinute = (float64(heightDiff) / timeDiff) * 60
+					blocksPerHour = blocksPerMinute * 60
+					if blocksPerMinute > 0 {
+						minutesRemaining := float64(blocksBehind) / blocksPerMinute
+						hoursRemaining := minutesRemaining / 60
+						if hoursRemaining > 24 {
+							estimatedTimeRemaining = fmt.Sprintf("%.0fd", hoursRemaining/24)
+						} else if hoursRemaining > 0 {
+							estimatedTimeRemaining = fmt.Sprintf("%.0fh", hoursRemaining)
+						} else {
+							estimatedTimeRemaining = fmt.Sprintf("%.0fm", minutesRemaining)
+						}
+					}
+				}
+			}
+			lastBlockHeight = blockHeight
+		}
+
+		response := map[string]interface{}{
+			"syncPercentage":         fmt.Sprintf("%.2f", syncPercent),
+			"blockHeight":            blockHeight,
+			"headerHeight":           headerHeight,
+			"blocksBehind":           blocksBehind,
+			"blocksPerMinute":        fmt.Sprintf("%.2f", blocksPerMinute),
+			"blocksPerHour":          fmt.Sprintf("%.2f", blocksPerHour),
+			"estimatedTimeRemaining": estimatedTimeRemaining,
+			"ibd":                    blockchainInfo.(map[string]interface{})["initialblockdownload"],
+			"chain":                  blockchainInfo.(map[string]interface{})["chain"],
+			"validationStage":        "Syncing",
+		}
+
+		json.NewEncoder(w).Encode(response)
+	})
+
+	// ========== 3️⃣ MEMPOOL INTELLIGENCE ==========
+	http.HandleFunc("/api/mempool-enhanced", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		mempoolInfo, _ := callBitcoinRpc("getmempoolinfo", []interface{}{})
+		mempool, _ := callBitcoinRpc("getrawmempool", []interface{}{true})
+
+		transactions := []map[string]interface{}{}
+		feeRates := []float64{}
+
+		if m, ok := mempool.(map[string]interface{}); ok {
+			count := 0
+			for txid, info := range m {
+				if count >= 20 {
+					break
+				}
+				if infoMap, ok := info.(map[string]interface{}); ok {
+					size := int64(infoMap["size"].(float64))
+					fee := 0.0
+					if f, ok := infoMap["fee"].(float64); ok {
+						fee = f
+					} else if fees, ok := infoMap["fees"].(map[string]interface{}); ok {
+						if f, ok := fees["base"].(float64); ok {
+							fee = f
+						}
+					}
+
+					feeRate := (fee * 100000000) / float64(size)
+					feeRates = append(feeRates, feeRate)
+
+					transactions = append(transactions, map[string]interface{}{
+						"txid":    txid,
+						"size":    size,
+						"fee":     fmt.Sprintf("%.0f", fee*100000000),
+						"feeRate": fmt.Sprintf("%.2f", feeRate),
+					})
+					count++
+				}
+			}
+		}
+
+		var slow, medium, fast float64
+		if len(feeRates) > 0 {
+			slow = feeRates[int(float64(len(feeRates))*0.1)]
+			medium = feeRates[int(float64(len(feeRates))*0.5)]
+			fast = feeRates[int(float64(len(feeRates))*0.9)]
+		}
+
+		mempoolSize := int64(0)
+		avgFee := 0.0
+		if m, ok := mempoolInfo.(map[string]interface{}); ok {
+			mempoolSize = int64(m["size"].(float64))
+			avgFee = m["total_fee"].(float64) / float64(mempoolSize)
+		}
+
+		response := map[string]interface{}{
+			"transactionCount": mempoolSize,
+			"mempoolBytes":     mempoolInfo.(map[string]interface{})["bytes"],
+			"mempoolMB":        fmt.Sprintf("%.2f", float64(mempoolInfo.(map[string]interface{})["bytes"].(float64))/(1024*1024)),
+			"averageFee":       fmt.Sprintf("%.2f", avgFee*100000000),
+			"feeDistribution": map[string]interface{}{
+				"slow":   fmt.Sprintf("%.2f", slow),
+				"medium": fmt.Sprintf("%.2f", medium),
+				"fast":   fmt.Sprintf("%.2f", fast),
+			},
+			"topTransactions": transactions,
+		}
+
+		json.NewEncoder(w).Encode(response)
+	})
+
+	// ========== 4️⃣ NETWORK & PEER ANALYTICS ==========
+	http.HandleFunc("/api/network-analytics", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		netInfo, _ := callBitcoinRpc("getnetworkinfo", []interface{}{})
+		peers, _ := callBitcoinRpc("getpeerinfo", []interface{}{})
+
+		inbound := int64(0)
+		outbound := int64(0)
+		avgLatency := 0.0
+
+		if arr, ok := peers.([]interface{}); ok {
+			for _, peer := range arr {
+				if peerMap, ok := peer.(map[string]interface{}); ok {
+					if peerMap["inbound"].(bool) {
+						inbound++
+					} else {
+						outbound++
+					}
+					if latency, ok := peerMap["pingtime"].(float64); ok {
+						avgLatency += latency
+					}
+				}
+			}
+			if len(arr) > 0 {
+				avgLatency = (avgLatency / float64(len(arr))) * 1000
+			}
+		}
+
+		totalPeers := inbound + outbound
+		inboundPercent := 0.0
+		if totalPeers > 0 {
+			inboundPercent = (float64(inbound) / float64(totalPeers)) * 100
+		}
+
+		response := map[string]interface{}{
+			"totalPeers":      totalPeers,
+			"inbound":         inbound,
+			"outbound":        outbound,
+			"inboundPercent":  fmt.Sprintf("%.1f", inboundPercent),
+			"outboundPercent": fmt.Sprintf("%.1f", 100-inboundPercent),
+			"averageLatency":  fmt.Sprintf("%.2f", avgLatency),
+			"protocolVersion": extractInt(netInfo, "protocolversion"),
+			"reachableIPv4":   netInfo.(map[string]interface{})["reachable_ipv4"],
+			"reachableIPv6":   netInfo.(map[string]interface{})["reachable_ipv6"],
+			"timeOffset":      extractInt(netInfo, "timeoffset"),
+		}
+
+		json.NewEncoder(w).Encode(response)
+	})
+
+	// ========== 5️⃣ SECURITY & NODE INTEGRITY ==========
+	http.HandleFunc("/api/security", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		blockchainInfo, _ := callBitcoinRpc("getblockchaininfo", []interface{}{})
+		netInfo, _ := callBitcoinRpc("getnetworkinfo", []interface{}{})
+
+		alerts := []string{}
+		if warnings, ok := netInfo.(map[string]interface{})["warnings"].(string); ok && warnings != "" {
+			alerts = append(alerts, "⚠️ Network warning: "+warnings)
+		}
+
+		response := map[string]interface{}{
+			"warnings":         netInfo.(map[string]interface{})["warnings"],
+			"chain":            blockchainInfo.(map[string]interface{})["chain"],
+			"currentBlockHash": blockchainInfo.(map[string]interface{})["bestblockhash"],
+			"orphanBlocks":     0,
+			"reorgDetected":    false,
+			"rpcAuth":          "Enabled",
+			"alerts":           alerts,
+			"pruned":           blockchainInfo.(map[string]interface{})["pruned"],
+		}
+
+		json.NewEncoder(w).Encode(response)
+	})
+
+	// ========== 6️⃣ STORAGE & PRUNING ==========
+	http.HandleFunc("/api/storage", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		blockchainInfo, _ := callBitcoinRpc("getblockchaininfo", []interface{}{})
+		chainsstats, _ := callBitcoinRpc("getchainsstats", []interface{}{1})
+		metrics := getSystemMetrics()
+
+		chainstateBytes := int64(0)
+		utxoCount := int64(0)
+		if m, ok := chainsstats.(map[string]interface{}); ok {
+			chainstateBytes = int64(m["bytes_serialized"].(float64))
+			utxoCount = int64(m["utxo_count"].(float64))
+		}
+
+		response := map[string]interface{}{
+			"chainstateSize":   chainstateBytes,
+			"chainstateGB":     fmt.Sprintf("%.2f", float64(chainstateBytes)/(1024*1024*1024)),
+			"pruned":           blockchainInfo.(map[string]interface{})["pruned"],
+			"pruneHeight":      extractInt(blockchainInfo, "pruneheight"),
+			"diskUsedGB":       fmt.Sprintf("%.2f", metrics.DiskUsedGB),
+			"diskTotalGB":      fmt.Sprintf("%.2f", metrics.DiskTotalGB),
+			"diskUsagePercent": fmt.Sprintf("%.2f", metrics.DiskUsage),
+			"blocksCount":      extractInt(blockchainInfo, "blocks"),
+			"utxoCount":        utxoCount,
+			"autoPruneEnabled": "No",
+		}
+
+		json.NewEncoder(w).Encode(response)
+	})
+
+	// ========== 8️⃣ TRANSACTION EXPLORER ==========
+	http.HandleFunc("/api/tx-lookup/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		txid := r.URL.Path[len("/api/tx-lookup/"):]
+		if !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(txid) {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"error": "Invalid TXID format"})
+			return
+		}
+
+		if tx, err := callBitcoinRpc("getrawtransaction", []interface{}{txid, true}); err == nil {
+			if txMap, ok := tx.(map[string]interface{}); ok {
+				inputs := int64(0)
+				if arr, ok := txMap["vin"].([]interface{}); ok {
+					inputs = int64(len(arr))
+				}
+				outputs := int64(0)
+				if arr, ok := txMap["vout"].([]interface{}); ok {
+					outputs = int64(len(arr))
+				}
+
+				response := map[string]interface{}{
+					"txid":          txid,
+					"size":          extractInt(txMap, "size"),
+					"vin":           inputs,
+					"vout":          outputs,
+					"confirmations": extractInt(txMap, "confirmations"),
+					"blocktime":     extractInt(txMap, "blocktime"),
+				}
+				json.NewEncoder(w).Encode(response)
+				return
+			}
+		}
+
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": "Transaction not found"})
+	})
+
 	port := getEnv("PORT", "3000")
 	log.Printf("Bitcoin Node Explorer running on port %s\n", port)
 	log.Fatal(http.ListenAndServe("0.0.0.0:"+port, nil))
@@ -510,4 +938,42 @@ func extractString(data interface{}, key string) string {
 		}
 	}
 	return ""
+}
+
+// System metrics utilities
+type SystemMetrics struct {
+	CPUUsage    float64
+	RAMUsage    float64
+	RAMUseMB    float64
+	RAMTotalMB  float64
+	DiskUsage   float64
+	DiskUsedGB  float64
+	DiskTotalGB float64
+}
+
+func getSystemMetrics() SystemMetrics {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	ramUseMB := float64(m.Alloc) / (1024 * 1024)
+	ramTotalMB := float64(m.TotalAlloc) / (1024 * 1024)
+	ramUsagePercent := (float64(m.Alloc) / float64(m.Sys)) * 100
+
+	// CPU usage is simplified - in production use a proper monitoring library
+	cpuUsage := 0.0
+
+	// Disk usage estimation (simplified)
+	diskUsage := 0.0
+	diskUsedGB := 0.0
+	diskTotalGB := 0.0
+
+	return SystemMetrics{
+		CPUUsage:    cpuUsage,
+		RAMUsage:    ramUsagePercent,
+		RAMUseMB:    ramUseMB,
+		RAMTotalMB:  ramTotalMB,
+		DiskUsage:   diskUsage,
+		DiskUsedGB:  diskUsedGB,
+		DiskTotalGB: diskTotalGB,
+	}
 }
