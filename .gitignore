@@ -29,7 +29,9 @@ target/
 
 # Dockerfile
 # docker-compose.yml
-# bitcoin.conf
-# bitcoin-*.conf
+bitcoin.conf
+bitcoin-*.conf
 *.log
 /bitcoin-data/
+/lnd-data/
+env.txt

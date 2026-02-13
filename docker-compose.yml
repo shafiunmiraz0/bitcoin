@@ -6,6 +6,8 @@ services:
     ports:
       - "8333:8333"
       - "8332:8332"
+      - "28332:28332"
+      - "28333:28333"
     volumes:
       - ./bitcoin-data:/home/bitcoin/.bitcoin  # Bind mount to local directory
     environment:
@@ -31,6 +33,33 @@ services:
       - bitcoin
     networks:
       - bitcoin-network
+
+  lnd:
+    container_name: lnd
+    image: lightninglabs/lnd:v0.19.0-beta
+    restart: unless-stopped
+    ports:
+      - "9735:9735"
+      - "10009:10009"
+    volumes:
+      - ./lnd-data:/root/.lnd
+    command: >
+      lnd
+      --bitcoin.active
+      --bitcoin.mainnet
+      --bitcoin.node=bitcoind
+      --bitcoind.rpchost=bitcoin-pruned-node
+      --bitcoind.rpcuser=bitcoinuser
+      --bitcoind.rpcpass=CHANGE_THIS_TO_A_STRONG_PASSWORD
+      --bitcoind.zmqpubrawblock=tcp://bitcoin-pruned-node:28332
+      --bitcoind.zmqpubrawtx=tcp://bitcoin-pruned-node:28333
+    depends_on:
+      - bitcoin
+    networks:
+      - bitcoin-network
+
+volumes:
+  lnd-data:
 
 networks:
   bitcoin-network:
