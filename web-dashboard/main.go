@@ -10,6 +10,7 @@ import (
 	"os"
 	"regexp"
 	"runtime"
+	"sort"
 	"time"
 )
 
@@ -689,41 +690,55 @@ func main() {
 
 		json.NewEncoder(w).Encode(response)
 	})
-
-	// ========== 3️⃣ MEMPOOL INTELLIGENCE ==========
+	// =========================
+	// 3️⃣ MEMPOOL INTELLIGENCE
+	// =========================
 	http.HandleFunc("/api/mempool-enhanced", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
 		mempoolInfo, _ := callBitcoinRpc("getmempoolinfo", []interface{}{})
-		mempool, _ := callBitcoinRpc("getrawmempool", []interface{}{true})
+		mempoolRaw, _ := callBitcoinRpc("getrawmempool", []interface{}{true})
 
 		transactions := []map[string]interface{}{}
 		feeRates := []float64{}
 
-		if m, ok := mempool.(map[string]interface{}); ok {
+		// Helper to safely convert interface{} to float64
+		floatFromMap := func(m map[string]interface{}, key string) float64 {
+			if val, ok := m[key]; ok && val != nil {
+				if f, ok := val.(float64); ok {
+					return f
+				}
+			}
+			return 0
+		}
+
+		if m, ok := mempoolRaw.(map[string]interface{}); ok {
 			count := 0
 			for txid, info := range m {
 				if count >= 20 {
 					break
 				}
 				if infoMap, ok := info.(map[string]interface{}); ok {
-					size := int64(infoMap["size"].(float64))
-					fee := 0.0
-					if f, ok := infoMap["fee"].(float64); ok {
-						fee = f
-					} else if fees, ok := infoMap["fees"].(map[string]interface{}); ok {
-						if f, ok := fees["base"].(float64); ok {
-							fee = f
+					size := int64(floatFromMap(infoMap, "size"))
+
+					// Fee can be under "fee" or "fees.base"
+					fee := floatFromMap(infoMap, "fee")
+					if fee == 0 {
+						if fees, ok := infoMap["fees"].(map[string]interface{}); ok {
+							fee = floatFromMap(fees, "base")
 						}
 					}
 
-					feeRate := (fee * 100000000) / float64(size)
+					feeRate := 0.0
+					if size > 0 {
+						feeRate = (fee * 1e8) / float64(size)
+					}
 					feeRates = append(feeRates, feeRate)
 
 					transactions = append(transactions, map[string]interface{}{
 						"txid":    txid,
 						"size":    size,
-						"fee":     fmt.Sprintf("%.0f", fee*100000000),
+						"fee":     fmt.Sprintf("%.0f", fee*1e8),
 						"feeRate": fmt.Sprintf("%.2f", feeRate),
 					})
 					count++
@@ -731,25 +746,35 @@ func main() {
 			}
 		}
 
+		// Calculate fee distribution percentiles
 		var slow, medium, fast float64
 		if len(feeRates) > 0 {
-			slow = feeRates[int(float64(len(feeRates))*0.1)]
-			medium = feeRates[int(float64(len(feeRates))*0.5)]
-			fast = feeRates[int(float64(len(feeRates))*0.9)]
+			sorted := make([]float64, len(feeRates))
+			copy(sorted, feeRates)
+			sort.Float64s(sorted)
+			slow = sorted[int(float64(len(sorted))*0.1)]
+			medium = sorted[int(float64(len(sorted))*0.5)]
+			fast = sorted[int(float64(len(sorted))*0.9)]
 		}
 
+		// Mempool stats
 		mempoolSize := int64(0)
 		avgFee := 0.0
 		if m, ok := mempoolInfo.(map[string]interface{}); ok {
-			mempoolSize = int64(m["size"].(float64))
-			avgFee = m["total_fee"].(float64) / float64(mempoolSize)
+			mempoolSize = int64(floatFromMap(m, "size"))
+			totalFee := floatFromMap(m, "total_fee")
+			if mempoolSize > 0 {
+				avgFee = totalFee / float64(mempoolSize)
+			}
 		}
+
+		bytes := floatFromMap(mempoolInfo.(map[string]interface{}), "bytes")
 
 		response := map[string]interface{}{
 			"transactionCount": mempoolSize,
-			"mempoolBytes":     mempoolInfo.(map[string]interface{})["bytes"],
-			"mempoolMB":        fmt.Sprintf("%.2f", float64(mempoolInfo.(map[string]interface{})["bytes"].(float64))/(1024*1024)),
-			"averageFee":       fmt.Sprintf("%.2f", avgFee*100000000),
+			"mempoolBytes":     bytes,
+			"mempoolMB":        fmt.Sprintf("%.2f", bytes/(1024*1024)),
+			"averageFee":       fmt.Sprintf("%.2f", avgFee*1e8),
 			"feeDistribution": map[string]interface{}{
 				"slow":   fmt.Sprintf("%.2f", slow),
 				"medium": fmt.Sprintf("%.2f", medium),
