@@ -311,7 +311,7 @@ func getDashboardHTML() string {
       try {
         const data = await fetch('/api/recent-blocks').then(r => r.json());
         let html = '';
-        (data.blocks || []).forEach(b => { html += '<tr><td>' + fmt(b.height) + '</td><td><code>' + b.hash.substring(0, 16) + '...</code></td><td>' + new Date(b.time * 1000).toLocaleString() + '</td><td>' + b.tx + '</td><td>' + bytes(b.size) + '</td></tr>'; });
+        (data.blocks || []).forEach(b => { html += '<tr><td>' + fmt(b.height) + '</td><td><code style="word-break: break-all;">' + b.hash + '</code></td><td>' + new Date(b.time * 1000).toLocaleString() + '</td><td>' + b.tx + '</td><td>' + bytes(b.size) + '</td></tr>'; });
         document.getElementById('blocksList').innerHTML = html;
       } catch (e) { console.error('Error loading blocks:', e); }
     }
@@ -364,7 +364,7 @@ func getDashboardHTML() string {
       try {
         const data = await fetch('/api/mempool-enhanced').then(r => r.json());
         let txHtml = '';
-        (data.topTransactions || []).slice(0, 10).forEach(t => { txHtml += '<tr><td><code>' + t.txid.substring(0, 16) + '...</code></td><td>' + bytes(t.size) + '</td><td>' + t.fee + ' sat</td><td>' + t.feeRate + '</td></tr>'; });
+        (data.topTransactions || []).slice(0, 10).forEach(t => { txHtml += '<tr><td><code style="word-break: break-all;">' + t.txid + '</code></td><td>' + bytes(t.size) + '</td><td>' + t.fee + ' sat</td><td>' + t.feeRate + '</td></tr>'; });
         document.getElementById('mempoolCards').innerHTML = '<div class="card"><div class="card-label">Transaction Count</div><div class="card-value">' + fmt(data.transactionCount) + '</div></div><div class="card"><div class="card-label">Mempool Size</div><div class="card-value">' + data.mempoolMB + ' MB</div></div><div class="card"><div class="card-label">Avg Fee</div><div class="card-value">' + data.averageFee + ' sat/vB</div></div><div class="card"><div class="card-label">Oldest TX Age</div><div class="card-value">' + data.oldestTransactionAge + ' min</div></div><div class="card"><div class="card-label">Recommended Fee</div><div class="card-sub">Slow: ' + data.feeDistribution.slow + ' | Medium: ' + data.feeDistribution.medium + ' | Fast: ' + data.feeDistribution.fast + '</div></div>';
         document.getElementById('mempoolList').innerHTML = txHtml;
       } catch (e) { console.error('Error loading mempool:', e); }
