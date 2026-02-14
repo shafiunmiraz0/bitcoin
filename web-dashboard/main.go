@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -898,39 +899,47 @@ func main() {
 	http.HandleFunc("/api/tx-lookup/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
-		txid := r.URL.Path[len("/api/tx-lookup/"):]
+		txid := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/tx-lookup/"))
 		if !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(txid) {
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(map[string]interface{}{"error": "Invalid TXID format"})
 			return
 		}
 
-		if tx, err := callBitcoinRpc("getrawtransaction", []interface{}{txid, true}); err == nil {
-			if txMap, ok := tx.(map[string]interface{}); ok {
-				inputs := int64(0)
-				if arr, ok := txMap["vin"].([]interface{}); ok {
-					inputs = int64(len(arr))
-				}
-				outputs := int64(0)
-				if arr, ok := txMap["vout"].([]interface{}); ok {
-					outputs = int64(len(arr))
-				}
-
-				response := map[string]interface{}{
-					"txid":          txid,
-					"size":          extractInt(txMap, "size"),
-					"vin":           inputs,
-					"vout":          outputs,
-					"confirmations": extractInt(txMap, "confirmations"),
-					"blocktime":     extractInt(txMap, "blocktime"),
-				}
-				json.NewEncoder(w).Encode(response)
-				return
-			}
+		tx, err := callBitcoinRpc("getrawtransaction", []interface{}{txid, true})
+		if err != nil || tx == nil {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]interface{}{"error": "Transaction not found"})
+			return
 		}
 
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]interface{}{"error": "Transaction not found"})
+		txMap, ok := tx.(map[string]interface{})
+		if !ok {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"error": "Unexpected response from Bitcoin RPC"})
+			return
+		}
+
+		// Count vin/vout safely
+		inputs := int64(0)
+		if arr, ok := txMap["vin"].([]interface{}); ok {
+			inputs = int64(len(arr))
+		}
+		outputs := int64(0)
+		if arr, ok := txMap["vout"].([]interface{}); ok {
+			outputs = int64(len(arr))
+		}
+
+		response := map[string]interface{}{
+			"txid":          txid,
+			"size":          extractInt(txMap, "size"),
+			"vin":           inputs,
+			"vout":          outputs,
+			"confirmations": extractInt(txMap, "confirmations"),
+			"blocktime":     extractInt(txMap, "blocktime"),
+		}
+
+		json.NewEncoder(w).Encode(response)
 	})
 
 	port := getEnv("PORT", "3000")
