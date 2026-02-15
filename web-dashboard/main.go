@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -44,6 +45,22 @@ var (
 		time   time.Time
 	}
 )
+
+var (
+	// Cached API response
+	storageCache map[string]interface{}
+
+	// Timestamp of last cache update
+	storageCacheTime time.Time
+
+	// Mutex to prevent race conditions
+	storageCacheMutex sync.Mutex
+)
+
+// Global reusable HTTP client with long timeout
+var rpcClient = &http.Client{
+	Timeout: 5 * time.Minute, // allow long RPC calls like gettxoutsetinfo
+}
 
 func init() {
 	bitcoinRPC = BitcoinRPC{
@@ -83,8 +100,7 @@ func callBitcoinRpc(method string, params []interface{}) (interface{}, error) {
 	httpReq.SetBasicAuth(bitcoinRPC.User, bitcoinRPC.Password)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(httpReq)
+	resp, err := rpcClient.Do(httpReq)
 	if err != nil {
 		log.Printf("RPC Error: %s - %v\n", method, err)
 		return nil, err
@@ -100,6 +116,10 @@ func callBitcoinRpc(method string, params []interface{}) (interface{}, error) {
 	err = json.Unmarshal(respBody, &rpcResp)
 	if err != nil {
 		return nil, err
+	}
+
+	if rpcResp.Error != nil {
+		return nil, fmt.Errorf("RPC %s returned error: %v", method, rpcResp.Error)
 	}
 
 	return rpcResp.Result, nil
@@ -868,15 +888,40 @@ func main() {
 	http.HandleFunc("/api/storage", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
-		blockchainInfo, _ := callBitcoinRpc("getblockchaininfo", []interface{}{})
-		chainsstats, _ := callBitcoinRpc("getchainsstats", []interface{}{1})
+		storageCacheMutex.Lock()
+		defer storageCacheMutex.Unlock()
+
+		// If cache exists and is younger than 10 minutes → return it
+		if storageCache != nil && time.Since(storageCacheTime) < 10*time.Minute {
+			json.NewEncoder(w).Encode(storageCache)
+			return
+		}
+
+		// Otherwise fetch fresh data
+		blockchainInfo, err := callBitcoinRpc("getblockchaininfo", []interface{}{})
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+
+		utxoInfo, err := callBitcoinRpc("gettxoutsetinfo", []interface{}{})
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+
 		metrics := getSystemMetrics()
 
 		chainstateBytes := int64(0)
 		utxoCount := int64(0)
-		if m, ok := chainsstats.(map[string]interface{}); ok {
-			chainstateBytes = int64(m["bytes_serialized"].(float64))
-			utxoCount = int64(m["utxo_count"].(float64))
+
+		if m, ok := utxoInfo.(map[string]interface{}); ok {
+			if v, ok := m["disk_size"].(float64); ok {
+				chainstateBytes = int64(v)
+			}
+			if v, ok := m["txouts"].(float64); ok {
+				utxoCount = int64(v)
+			}
 		}
 
 		response := map[string]interface{}{
@@ -889,8 +934,12 @@ func main() {
 			"diskUsagePercent": fmt.Sprintf("%.2f", metrics.DiskUsage),
 			"blocksCount":      extractInt(blockchainInfo, "blocks"),
 			"utxoCount":        utxoCount,
-			"autoPruneEnabled": "No",
+			"autoPruneEnabled": "Yes",
 		}
+
+		// Save to cache
+		storageCache = response
+		storageCacheTime = time.Now()
 
 		json.NewEncoder(w).Encode(response)
 	})
