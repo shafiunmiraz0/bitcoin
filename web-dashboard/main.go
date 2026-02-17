@@ -675,7 +675,7 @@ func main() {
 		if lastBlockHeight != blockHeight && blocksBehind > 0 {
 			// Simple calculation based on recent blocks
 			if len(blockTimestamps) > 10 {
-				timeDiff := time.Now().Sub(blockTimestamps[0].time).Seconds()
+				timeDiff := time.Since(blockTimestamps[0].time).Seconds()
 				heightDiff := blockTimestamps[len(blockTimestamps)-1].height - blockTimestamps[0].height
 				if timeDiff > 0 {
 					blocksPerMinute = (float64(heightDiff) / timeDiff) * 60
